@@ -1,0 +1,2 @@
+DROP KEYSPACE IF EXISTS adani_demo;
+DROP KEYSPACE IF EXISTS replay_adani_demo;

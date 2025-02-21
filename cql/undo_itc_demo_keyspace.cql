@@ -1,0 +1,2 @@
+DROP KEYSPACE IF EXISTS itc_demo;
+DROP KEYSPACE IF EXISTS replay_itc_demo;

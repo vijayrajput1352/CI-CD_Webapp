@@ -1,0 +1,22 @@
+"use strict";
+
+const _rawDataTransformer = async (currentData) => {
+<%- rawDataTransform %>
+};
+
+module.exports = async (currentData) => {
+	const timestampTag = '<%- timestampTag %>';
+	const timestampFormat = '<%- timestampFormat %>';
+	const moment = require('moment');
+
+	const transformedData = await _rawDataTransformer(currentData);
+
+	if(!transformedData || !transformedData[timestampTag])
+		return null;
+
+	const timestamp = (timestampFormat === 'unix_epoch_with_milliseconds') ? moment(Number(transformedData[timestampTag])) : moment(transformedData[timestampTag], timestampFormat);
+	if(timestamp.isValid())
+		return timestamp.valueOf();
+
+	return null;
+};

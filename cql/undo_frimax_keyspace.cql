@@ -1,0 +1,2 @@
+DROP KEYSPACE IF EXISTS frimax;
+DROP KEYSPACE IF EXISTS replay_frimax;

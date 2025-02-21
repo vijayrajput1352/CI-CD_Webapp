@@ -1,0 +1,272 @@
+<%- attributeSetClass -%>
+
+/**
+ * @class   DataProcessor
+ *
+ * @param   {Object} [options] - Option to pass in the Logger, Cache and Database interfaces
+ *
+ * @classdesc The Plant.Works WorkOrder Data Processor Class.
+ *
+ * @description
+ * The class for processing workorder file uploads.
+ */
+
+class DataProcessor {
+	// #region Constructor
+	constructor(options) {
+		options = options || {};
+		Object.defineProperty(this, '$moment', {
+			'__proto__': null,
+			'value': options.moment || null
+		});
+
+		Object.defineProperty(this, '$cache', {
+			'__proto__': null,
+			'value': options.cache || null
+		});
+
+		Object.defineProperty(this, '$database', {
+			'__proto__': null,
+			'value': options.database || null
+		});
+
+		Object.defineProperty(this, '$logger', {
+			'__proto__': null,
+			'value': options.logger || console
+		});
+
+		Object.defineProperty(this, '$pubsub', {
+			'__proto__': null,
+			'value': options.pubsub || null
+		});
+
+		this.#currentTimestamp = moment(options.currentTimestamp);
+	}
+	// #endregion
+
+	// #region Initialization with previous state
+	async initialize() {
+		const PlantWorksMiddlewareError = require('plantworks-middleware-error').PlantWorksMiddlewareError;
+		let previousState = null;
+
+		try {
+			if(this.$cache && this.$cache.getAsync && (typeof this.$cache.getAsync === 'function')) {
+				previousState = await this.$cache.getAsync(`workOrder!current!state!<%= workOrderFormat.id %>`);
+				previousState = JSON.parse(previousState || '{}');
+			}
+
+			if(!this.#attrSetEvaluator) {
+				this.#attrSetEvaluator = new AttributeSetEvaluator({
+					'cache': this.$cache,
+					'database': this.$database,
+					'logger': this.$logger,
+					'currentTimestamp': this.#currentTimestamp
+				});
+			}
+
+			await this.#attrSetEvaluator.initialize(previousState);
+		}
+		catch(err) {
+			throw new PlantWorksMiddlewareError(`WorkOrderDataProcessor#${this.#id}::initialize`, err);
+		}
+	}
+	// #endregion
+
+	// #region Evaluation with current values
+	async evaluate(currentValues) {
+		this.#performanceMetadata = {};
+		const convertHRTime = require('convert-hrtime');
+		const PlantWorksMiddlewareError = require('plantworks-middleware-error').PlantWorksMiddlewareError;
+
+		try {
+			const startTime = process.hrtime();
+			// Step 0: raw data transform and set currentTimestamp
+			currentValues = await this._rawDataTransformer(currentValues);
+			this.#performanceMetadata['rawDataTransformDuration'] = Number(convertHRTime(process.hrtime(startTime)).milliseconds.toFixed(2));
+
+			if (currentValues === null || currentValues === undefined || typeof currentValues !== 'object' || !Object.keys(currentValues).length) {
+				throw new Error('_rawDataTransform function returned null/undefined/non-object/empty-object', safeJsonStringify(currentValues));
+			}
+
+			// Step 1: initialize
+			const initializeStartTime = process.hrtime();
+			await this.initialize();
+			this.#performanceMetadata['initializeDuration'] = process.hrtime(initializeStartTime);
+			const notAllowed = [];
+			const nullAllowed = [];
+
+			Object.keys(this.#paramTypeMap).forEach((tag) => {
+				if(this.#paramTypeMap[tag] !== 'input') {
+					delete this.#tagTypeMap[tag]
+				}
+			});
+
+			Object.keys(this.#tagTypeMap).forEach((tag) => {
+				if(!Object.keys(currentValues).includes(tag) || currentValues[tag].toString().trim() == '') {
+					if(this.#notNullParameter.split(',').includes(tag)) {
+						notAllowed.push(tag);
+					}
+				}
+			});
+
+			Object.keys(this.#tagTypeMap).forEach((tag) => {
+				if(!Object.keys(currentValues).includes(tag) || currentValues[tag].toString().trim() == '') {
+					nullAllowed.push(tag);
+				}
+			});
+
+			const finalColumn = Object.keys(this.#paramTypeMap).filter(param => this.#paramTypeMap[param] === 'input');
+
+			// Step 2: Call the attribute set evaluator to evaluate the current data
+			await this.#attrSetEvaluator.ingest(currentValues, this.#performanceMetadata);
+			const evaluatedAttributes = await this.#attrSetEvaluator.execute(this.#performanceMetadata);
+
+			// Step 3: Call the processed data transformer...
+			const processedDataTransformStartTime = process.hrtime();
+			await this._processedDataTransformer(evaluatedAttributes);
+			this.#performanceMetadata['processedDataTransformDuration'] = Number(convertHRTime(process.hrtime(processedDataTransformStartTime)).milliseconds.toFixed(2));
+
+			// Step 4: compare work order data
+			evaluatedAttributes.notAllowedNull = notAllowed;
+			evaluatedAttributes.nullAllowed = nullAllowed;
+			evaluatedAttributes.finalColumn = finalColumn;
+
+			const compareWorkOrderStartTime = process.hrtime();
+			await this._compareWorkOrder(evaluatedAttributes);
+			this.#performanceMetadata['compareWorkOrder'] = Number(convertHRTime(process.hrtime(compareWorkOrderStartTime)).milliseconds.toFixed(2));
+
+			evaluatedAttributes.uniqueIdParameter = this.#uniqueIdParameter;
+
+			// Finally, store the metadata itself for analysis purposes
+			this.$logger.debug(`WorkOrderDataProcessor#${this.#id}::evaluate::result: ${safeJsonStringify(evaluatedAttributes, null, '\t')}`);
+			this.$logger.debug(`WorkOrderDataProcessor#${this.#id}::evaluate::metadata: ${safeJsonStringify(this.#performanceMetadata, null, '\t')}`);
+
+			return evaluatedAttributes;
+		}
+		catch(err) {
+			const error = new PlantWorksMiddlewareError(`WorkOrderDataProcessor#${this.#id}::evaluate`, err);
+			if((plantworksEnv === 'development') || (plantworksEnv === 'test')) {
+				this.$logger.error(`WorkOrderDataProcessor#${this.#id}::evaluate: ${error.toString()}`);
+			}
+
+			throw error;
+		}
+	}
+	// #endregion
+
+	// #region Private Methods
+	async _rawDataTransformer(currentData) {
+<%- workOrderFormat.rawDataTransform %>
+	}
+
+	async _processedDataTransformer(evaluatedAttributes) {
+<%- workOrderFormat.processedDataTransform %>
+	}
+
+	async _compareWorkOrder(evaluatedAttributes) {
+		evaluatedAttributes.notes = [];
+		evaluatedAttributes.date = [];
+
+		Object.keys(this.#tagTypeMap).forEach((tag) => {
+			if(this.#tagTypeMap[tag] == "date") {
+				evaluatedAttributes.date.push(tag);
+			}
+		});
+
+		if(evaluatedAttributes.nullAllowed.length > 0) {
+			evaluatedAttributes.nullAllowed.forEach((attribute) => {
+				evaluatedAttributes['attributes'][attribute] = '';
+			});
+		}
+
+		if(evaluatedAttributes.notAllowedNull.length > 0) {
+			evaluatedAttributes.notAllowedNull.forEach((attribute) => {
+				evaluatedAttributes['attributes'][attribute] = '';
+				evaluatedAttributes.notes.push(`${attribute} can't be empty`);
+			});
+
+			evaluatedAttributes.status = 'REJECTED';
+			return evaluatedAttributes;
+		}
+
+		if(evaluatedAttributes.customStatus && evaluatedAttributes.customStatus == 'REJECTED') {
+			evaluatedAttributes.status = evaluatedAttributes.customStatus;
+			evaluatedAttributes.notes = evaluatedAttributes.customNotes ? evaluatedAttributes.customNotes : [];
+			return evaluatedAttributes;
+		}
+
+		let oldData = await this.$database.knex.raw(this.#oldWorkOrderDataQuery, ['<%= workOrderFormat.tenant_id %>', '<%= workOrderFormat.id %>', evaluatedAttributes.attributes[this.#uniqueIdParameter].toString()]);
+		evaluatedAttributes.status = 'NEW';
+
+		if(!evaluatedAttributes.attributes.PLANNED_START_TIME) {
+			evaluatedAttributes.status = 'REJECTED';
+			evaluatedAttributes.notes.push('Planned Start time is not present');
+		}
+
+		if(!evaluatedAttributes.attributes.PLANNED_STOP_TIME) {
+			evaluatedAttributes.status = 'REJECTED';
+			evaluatedAttributes.notes.push('Planned Stop time is not present');
+		}
+
+		if(evaluatedAttributes.attributes.PLANNED_START_TIME < this.#currentTimestamp) {
+			evaluatedAttributes.status = 'REJECTED';
+			evaluatedAttributes.notes.push('Planned start time should be greater than current time');
+		}
+
+		if(evaluatedAttributes.attributes.PLANNED_STOP_TIME <= evaluatedAttributes.attributes.PLANNED_START_TIME) {
+			evaluatedAttributes.status = 'REJECTED';
+			evaluatedAttributes.notes.push('Planned stop time should be greater than planned start time');
+		}
+
+		if(!oldData.rows || !oldData.rows.length || evaluatedAttributes.status == 'REJECTED')
+			return evaluatedAttributes;
+
+		oldData = oldData.rows.shift();
+
+		if(oldData['current_status'] !== 'not_started'){
+			evaluatedAttributes.status = 'REJECTED';
+			evaluatedAttributes.notes.push('can not update running, discontinued, completed and canceled work orders');
+			return evaluatedAttributes;
+		}
+
+		let oldDataMap = oldData.values;
+
+		Object.keys(oldDataMap).forEach(key => {
+			if(evaluatedAttributes.attributes[key]) {
+				if((oldDataMap[key].toString() !== evaluatedAttributes.attributes[key].toString()) && !moment.isMoment(evaluatedAttributes.attributes[key])) {
+					evaluatedAttributes.status = 'UPDATED';
+					evaluatedAttributes.notes.push(`${key} has changed from "${oldDataMap[key]}" to "${evaluatedAttributes.attributes[key]}"`);
+				}
+				else if(moment.isMoment(evaluatedAttributes.attributes[key]) && (evaluatedAttributes.attributes[key].format() !== moment(oldDataMap[key]).format())) {
+					evaluatedAttributes.status = 'UPDATED';
+					evaluatedAttributes.notes.push(`${key} has changed from "${oldDataMap[key] !== '' ? moment(oldDataMap[key]).format('YYYY-MM-DD hh:mm:ss') : ''}" to "${evaluatedAttributes.attributes[key].format('YYYY-MM-DD hh:mm:ss')}"`);
+				}
+				else if(evaluatedAttributes.status !== 'UPDATED')
+					evaluatedAttributes.status = 'NO CHANGE';
+			}
+
+		});
+
+		return evaluatedAttributes;
+	}
+
+	// #endregion
+
+	// #region Private Fields
+	#id = '<%= workOrderFormat.id %>';
+
+	#uniqueIdParameter = '<%= workOrderFormat.uniqueId %>';
+	#notNullParameter = '<%= workOrderFormat.notNullIds %>';
+	#oldWorkOrderDataQuery = 'SELECT * FROM public.tenant_work_orders WHERE tenant_id = ? AND tenant_work_order_format_id = ? AND work_order_id = ?';
+
+	#currentTimestamp = null;
+
+	#attrSetEvaluator = null;
+	#tagTypeMap = <%- parameterTypeMappings %>;
+	#paramTypeMap = <%- typeMappings %>;
+
+	#performanceMetadata = null;
+	// #endregion
+}
+
+exports.DataProcessor = DataProcessor;

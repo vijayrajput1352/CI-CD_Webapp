@@ -1,0 +1,4 @@
+--recursive
+--timeout 50000
+--require ./test/setup_mocks
+--reporter spec

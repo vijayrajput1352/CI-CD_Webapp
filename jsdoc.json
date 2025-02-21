@@ -1,0 +1,85 @@
+{
+	"tags": {
+		"allowUnknownTags": true
+	},
+	"source": {
+		"include": ["./", "./README.md"],
+		"exclude": [
+			".circleci",
+			"cql",
+			"deploy",
+			"example.config",
+			"i18n",
+			"knex_migrations",
+			"logs",
+			"node_modules",
+			"sql",
+			"static_assets",
+			"tenant_applications",
+			"tenant_templates",
+			"test"
+		],
+		"includePattern": ".+\\.js(doc)?$",
+		"excludePattern": "(docs/)"
+	},
+	"opts": {
+		"destination": "./jsdoc_default",
+		"encoding": "utf8",
+		"package": "./package.json",
+		"readme": "./README.md",
+		"recurse": true,
+		"verbose": true,
+		"template": "./node_modules/docdash"
+	},
+	"plugins": [
+		"plugins/markdown",
+		"plugins/summarize"
+	],
+	"templates": {
+		"cleverLinks": true,
+		"disableSort": false,
+		"monospaceLinks": false,
+		"referenceTitle": "Plant.Works Web Application Server",
+
+		"default": {
+			"outputSourceFiles": true,
+			"includeDate": false
+		}
+	},
+	"docdash": {
+		"collapse": true,
+		"navLevel": 2,
+		"removeQuotes": "none",
+		"search": true,
+		"sort": true,
+		"static": true,
+		"typedefs": true,
+		"wrap": false,
+
+		"meta": {
+			"title": "Plant.Works Web Application Server",
+			"description": "Plant.Works Web Application Server",
+			"keyword": "plantworks"
+		},
+		"openGraph": {
+			"title": "Plant.Works Web Application Server",
+			"type": "documentation",
+			"image": "./tenant_assets/www/img/logo.png",
+			"site_name": "Plant.Works Web Application Server",
+			"url": "https://plantworks.github.io/webapp-server"
+		},
+
+		"scripts": [],
+
+        "sectionOrder": [
+			"Classes",
+			"Modules",
+			"Externals",
+			"Events",
+			"Namespaces",
+			"Mixins",
+			"Tutorials",
+			"Interfaces"
+	   ]
+   }
+}

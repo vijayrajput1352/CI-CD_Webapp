@@ -1,0 +1,2 @@
+DROP KEYSPACE IF EXISTS tibcon;
+DROP KEYSPACE IF EXISTS replay_tibcon;

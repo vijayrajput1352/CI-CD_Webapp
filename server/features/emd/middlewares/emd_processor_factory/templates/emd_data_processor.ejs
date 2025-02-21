@@ -1,0 +1,218 @@
+<%- attributeSetClass -%>
+
+/**
+ * @class   DataProcessor
+ *
+ * @param   {Object} [options] - Option to pass in the Logger, Cache, and Database interfaces
+ *
+ * @classdesc The Plant.Works Emd Data Processor Class.
+ *
+ * @description
+ * The class for processing emd file uploads.
+ */
+
+class DataProcessor {
+	// #region Constructor
+	constructor(options) {
+		options = options || {};
+		Object.defineProperty(this, '$moment', {
+			'__proto__': null,
+			'value': options.moment || null
+		});
+
+		Object.defineProperty(this, '$cache', {
+			'__proto__': null,
+			'value': options.cache || null
+		});
+
+		Object.defineProperty(this, '$database', {
+			'__proto__': null,
+			'value': options.database || null
+		});
+
+		Object.defineProperty(this, '$logger', {
+			'__proto__': null,
+			'value': options.logger || console
+		});
+
+		Object.defineProperty(this, '$pubsub', {
+			'__proto__': null,
+			'value': options.pubsub || null
+		});
+
+		this.#currentTimestamp = moment(options.currentTimestamp);
+	}
+	// #endregion
+
+	// #region Initialization with previous state
+	async initialize() {
+		const PlantWorksMiddlewareError = require('plantworks-middleware-error').PlantWorksMiddlewareError;
+		let previousState = null;
+
+		try {
+			previousState = {};
+
+			if(!this.#attrSetEvaluator) {
+				this.#attrSetEvaluator = new AttributeSetEvaluator({
+					'cache': this.$cache,
+					'database': this.$database,
+					'logger': this.$logger,
+					'currentTimestamp': this.#currentTimestamp
+				});
+			}
+
+			await this.#attrSetEvaluator.initialize(previousState);
+		}
+		catch(err) {
+			throw new PlantWorksMiddlewareError(`emdDataProcessor#${this.#id}::initialize`, err);
+		}
+	}
+	// #endregion
+
+	// #region Evaluation with current values
+	async evaluate(currentValues) {
+		this.#performanceMetadata = {};
+		const convertHRTime = require('convert-hrtime');
+		const PlantWorksMiddlewareError = require('plantworks-middleware-error').PlantWorksMiddlewareError;
+
+		try {
+			const startTime = process.hrtime();
+
+			// Step 0: raw data transform
+			currentValues = await this._rawDataTransformer(currentValues);
+			this.#performanceMetadata['rawDataTransformDuration'] = Number(convertHRTime(process.hrtime(startTime)).milliseconds.toFixed(2));
+
+			if (currentValues === null || currentValues === undefined || typeof currentValues !== 'object' || !Object.keys(currentValues).length) {
+				throw new Error('_rawDataTransform function returned null/undefined/non-object/empty-object', safeJsonStringify(currentValues));
+			}
+
+			// Step 1: initialize
+			const initializeStartTime = process.hrtime();
+			await this.initialize();
+			this.#performanceMetadata['initializeDuration'] = process.hrtime(initializeStartTime);
+
+			// Step 2: Call the attribute set evaluator to evaluate the current data
+			await this.#attrSetEvaluator.ingest(currentValues, this.#performanceMetadata);
+			const evaluatedAttributes = await this.#attrSetEvaluator.execute(this.#performanceMetadata);
+
+			// Step 3: Call the processed data transformer...
+			try{
+				const processedDataTransformStartTime = process.hrtime();
+				await this._processedDataTransformer(evaluatedAttributes);
+				this.#performanceMetadata['processedDataTransformDuration'] = Number(convertHRTime(process.hrtime(processedDataTransformStartTime)).milliseconds.toFixed(2));
+			}
+			catch(err){
+				evaluatedAttributes.rejected = true;
+				return evaluatedAttributes;
+			}
+
+			// Step 4: check for required colums
+			const missingRequiredParams = [];
+			this.#notNullParameters.forEach((param) => {
+				if(currentValues[param] === undefined || currentValues[param] === null || currentValues[param].toString().trim() === '') {
+					missingRequiredParams.push(param);
+					evaluatedAttributes.attributes[param] = '';
+				}
+			});
+
+			if(missingRequiredParams.length) {
+				evaluatedAttributes.mssingRequiredParams = missingRequiredParams;
+				evaluatedAttributes.rejected = true;
+				return evaluatedAttributes;
+			}
+
+			// Step 5: calculate diff
+			const calculateDiffStartTime = process.hrtime();
+			await this._calculateDiff(evaluatedAttributes);
+			this.#performanceMetadata['calculateDiffDuration'] = Number(convertHRTime(process.hrtime(calculateDiffStartTime)).milliseconds.toFixed(2));
+
+			evaluatedAttributes.uniqueIdParameter = this.#uniqueIdParameter;
+			evaluatedAttributes.tagTypeMap = this.#tagTypeMap;
+			evaluatedAttributes.operationMetadata = this.#operationMetadata;
+			evaluatedAttributes.inputParams = Object.keys(this.#paramTypeMap).filter(param => this.#paramTypeMap[param] === 'input');
+
+			// Finally, store the metadata itself for analysis purposes
+			this.$logger.debug(`emdDataProcessor#${this.#id}::evaluate::result: ${safeJsonStringify(evaluatedAttributes, null, '\t')}`);
+			this.$logger.debug(`emdDataProcessor#${this.#id}::evaluate::metadata: ${safeJsonStringify(this.#performanceMetadata, null, '\t')}`);
+
+			return evaluatedAttributes;
+		}
+		catch(err) {
+			const error = new PlantWorksMiddlewareError(`emdDataProcessor#${this.#id}::evaluate`, err);
+			if((plantworksEnv === 'development') || (plantworksEnv === 'test')) {
+				this.$logger.error(`emdDataProcessor#${this.#id}::evaluate: ${error.toString()}`);
+			}
+
+			throw error;
+		}
+	}
+	// #endregion
+
+	// #region Private Methods
+	async _rawDataTransformer(currentData) {
+<%- emdConfiguration.rawDataTransform %>
+	}
+
+	async _processedDataTransformer(evaluatedAttributes) {
+<%- emdConfiguration.processedDataTransform %>
+	}
+
+	async _calculateDiff(evaluatedAttributes) {
+		let oldData = await this.$database.knex.raw(this.#selectQuery, [this.#tenantId, this.#id, evaluatedAttributes.attributes[this.#uniqueIdParameter], true]);
+
+		if(!oldData.rows || !oldData.rows.length) {
+			evaluatedAttributes.new = true;
+			return evaluatedAttributes;
+		}
+
+		oldData = oldData.rows[0];
+		evaluatedAttributes.diff = {};
+
+		Object.keys(evaluatedAttributes.attributes).forEach((internalTag) => {
+			if(internalTag === this.#uniqueIdParameter)
+				return;
+
+			if(!oldData.values[internalTag]) {
+				evaluatedAttributes.diff[internalTag] = '';
+				evaluatedAttributes.update = true;
+			}
+			else {
+				const oldVal = oldData.data_types[internalTag] === 'date' ? this.$moment(oldData.values[internalTag]).valueOf(): oldData.values[internalTag];
+				const newVal = this.#tagTypeMap[internalTag] === 'date' ? this.$moment(evaluatedAttributes.attributes[internalTag]).valueOf() : evaluatedAttributes.attributes[internalTag];
+
+				if(oldVal.toString() !== newVal.toString()){
+					evaluatedAttributes.diff[internalTag] = oldData.values[internalTag];
+					evaluatedAttributes.update = true;
+				}
+			}
+		});
+
+		if(!Object.keys(evaluatedAttributes.diff).length)
+			delete evaluatedAttributes.diff;
+
+		this.$logger.info(`evaluated attrs`, evaluatedAttributes);
+		return evaluatedAttributes;
+	}
+
+	// #endregion
+
+	// #region Private Fields
+	#id = '<%= emdConfiguration.id %>';
+	#tenantId = '<%= emdConfiguration.tenant_id %>';
+	#operationMetadata = '<%= emdConfiguration.operationMetadata %>';
+	#uniqueIdParameter = '<%= emdConfiguration.uniqueInternalTag %>';
+	#notNullParameters = <%- emdConfiguration.notNullParameters %>;
+
+	#selectQuery = 'SELECT * FROM tenant_emd_data WHERE tenant_id = ? AND tenant_emd_configuration_id = ? AND masterdata_id = ? AND active = ? ORDER BY inserted_at DESC LIMIT 1';
+
+	#currentTimestamp = null;
+
+	#attrSetEvaluator = null;
+	#tagTypeMap = <%- parameterTypeMappings %>;
+	#paramTypeMap = <%- typeMappings %>;
+
+	#performanceMetadata = null;
+	// #endregion
+}
+
+exports.DataProcessor = DataProcessor;

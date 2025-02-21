@@ -1,0 +1,32 @@
+{
+        "family": "plantworks-webapp", 
+        "containerDefinitions": [
+            {
+                "environment": [], 
+                "name": "web-app-server", 
+                "mountPoints": [], 
+                "image": "734020790503.dkr.ecr.ap-south-1.amazonaws.com/webapp:%VERSION%", 
+                "cpu": 900, 
+                "portMappings": [
+                    {
+                        "protocol": "tcp", 
+                        "containerPort": 9100, 
+                        "hostPort": 0
+                    }
+                ], 
+                "logConfiguration": {
+                    "logDriver": "awslogs", 
+                    "options": {
+                        "awslogs-region": "ap-south-1", 
+                        "awslogs-stream-prefix": "ecs", 
+                        "awslogs-group": "/ecs/web-app-server"
+                    }
+                }, 
+                "memory": 900, 
+                "essential": true, 
+                "volumesFrom": []
+            }
+	]
+    
+    
+}

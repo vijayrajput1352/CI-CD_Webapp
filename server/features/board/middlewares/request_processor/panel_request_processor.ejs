@@ -1,0 +1,136 @@
+/**
+ * @class   PanelRequestProcessor
+ *
+ * @param   {Object} [options] - Option to pass in the Logger, Cache, Database, and Timescale interfaces
+ *
+ * @classdesc The Plant.Works Historical Dashboard Request Processor Class.
+ *
+ * @description
+ * The class for processing the requests for historical dashboards.
+ */
+
+ /**
+ * Module dependencies, required for ALL Plant.Works' modules
+ * @ignore
+ */
+const cleanStack = require('clean-stack');
+const promises = require('bluebird');
+const safeJsonStringify = require('safe-json-stringify'); // eslint-disable-line no-unused-vars
+
+/**
+ * Module dependencies, required for this module
+ * @ignore
+ */
+
+/**
+ * Moment / Duration Format Setup
+ */
+const moment = require('moment-timezone');
+const momentDurationFormatSetup = require('moment-duration-format');
+momentDurationFormatSetup(moment);
+
+class PanelRequestProcessor {
+	// #region Constructor
+	constructor(options) {
+		options = options || {};
+
+		Object.defineProperty(this, '$cache', {
+			'__proto__': null,
+			'value': options.cache || null
+		});
+
+		Object.defineProperty(this, '$database', {
+			'__proto__': null,
+			'value': options.database || null
+		});
+
+		Object.defineProperty(this, '$logger', {
+			'__proto__': null,
+			'value': options.logger || console
+		});
+
+		Object.defineProperty(this, '$pubsub', {
+			'__proto__': null,
+			'value': options.pubsub || null
+		});
+
+		Object.defineProperty(this, '$timescale', {
+			'__proto__': null,
+			'value': options.timescale || null
+		});
+	}
+	// #endregion
+
+	// #region Request Executor
+	async execute(requestData) {
+		const convertHRTime = require('convert-hrtime');
+
+		try {
+			const evaluationStartTime = process.hrtime();
+
+			// Step 1: Call the request data transformer...
+			const formattedData = await this._requestDataFormatter(requestData);
+
+			// Step 2: Call the main function with the formatted data
+			const processedData = await this._evaluate(formattedData);
+
+			// Step 3: Call the processed data transformer...
+			const outputData = await this._responseDataFormatter(processedData);
+
+			// Step 4: Calculate some metadata about the execution...
+			const evaluationDuration = process.hrtime(evaluationStartTime);
+
+			// Finally, log execution time itself for analysis purposes, and return
+			this.$logger.debug(`PanelRequestProcessor#${this.#id}::execute::duration: ${Number(convertHRTime(evaluationDuration).milliseconds.toFixed(2))}`);
+			return outputData;
+		}
+		catch(err) {
+			if((plantworksEnv === 'development') || (plantworksEnv === 'test')) {
+				this.$logger.error(`PanelDataProcessor#${this.#id}::evaluate:\n${err.message}\n${err.stack}`);
+			}
+
+			throw err;
+		}
+	}
+	// #endregion
+
+	// #region Request Data Transformation
+	async _requestDataFormatter(inputData) {
+		try {
+<%- panel.requestProcessor %>
+		}
+		catch(err) {
+			throw err;
+		}
+	}
+	// #endregion
+
+	// #region The actual executor
+	async _evaluate(formattedData) {
+		try {
+<%- panel.executor %>
+		}
+		catch(err) {
+			throw err;
+		}
+	}
+	// #endregion
+
+	// #region Response Data Transformation
+	async _responseDataFormatter(processedData) {
+		try {
+<%- panel.responseProcessor %>
+		}
+		catch(err) {
+			throw err;
+		}
+	}
+	// #endregion
+
+	// #region Private Fields
+	#id = '<%= panel.id %>';
+	#currentTimestamp = moment();
+	// #3ndregion
+}
+
+exports.RequestProcessor = PanelRequestProcessor;

@@ -1,0 +1,185 @@
+<%- attributeSetClass -%>
+
+/**
+ * @class   OperatorFormRequestProcessor
+ *
+ * @param   {Object} [options] - Option to pass in the Logger, Cache, Database, and Timescale interfaces
+ *
+ * @classdesc The Plant.Works operator form Request Processor Class.
+ *
+ * @description
+ * The class for processing the requests for operator forms.
+ */
+
+ /**
+ * Module dependencies, required for ALL Plant.Works' modules
+ * @ignore
+ */
+
+/**
+ * Module dependencies, required for this module
+ * @ignore
+ */
+
+/**
+ * Moment / Duration Format Setup
+ */
+
+class OperatorFormRequestProcessor {
+	// #region Constructor
+	constructor(options) {
+		options = options || {};
+
+		Object.defineProperty(this, '$cache', {
+			'__proto__': null,
+			'value': options.cache || null
+		});
+
+		Object.defineProperty(this, '$database', {
+			'__proto__': null,
+			'value': options.database || null
+		});
+
+		Object.defineProperty(this, '$logger', {
+			'__proto__': null,
+			'value': options.logger || console
+		});
+
+		Object.defineProperty(this, '$pubsub', {
+			'__proto__': null,
+			'value': options.pubsub || null
+		});
+
+		Object.defineProperty(this, '$timescale', {
+			'__proto__': null,
+			'value': options.timescale || null
+		});
+	}
+	// #endregion
+
+	// #region Initialization with previous state
+	async initialize() {
+		const PlantWorksMiddlewareError = require('plantworks-middleware-error').PlantWorksMiddlewareError;
+		let previousState = null;
+
+		try {
+			if(this.$cache && this.$cache.getAsync && (typeof this.$cache.getAsync === 'function')) {
+				previousState = await this.$cache.getAsync(`operatorForm!current!state!<%= operatorForm.id %>`);
+				previousState = JSON.parse(previousState || '{}');
+			}
+
+			if(!this.#attrSetEvaluator) {
+				this.#attrSetEvaluator = new AttributeSetEvaluator({
+					'cache': this.$cache,
+					'database': this.$database,
+					'logger': this.$logger,
+					'currentTimestamp': this.#currentTimestamp,
+					'persistenceKeySpace': '<%= persistenceKeySpace %>',
+					'timescale': this.$timescale
+				});
+			}
+
+			await this.#attrSetEvaluator.initialize(previousState);
+		}
+		catch(err) {
+			throw new PlantWorksMiddlewareError(`WorkOrderDataProcessor#${this.#id}::initialize`, err);
+		}
+	}
+	// #endregion
+
+	// #region Request Executor
+	async execute(requestData) {
+		this.#performanceMetadata = {};
+		const convertHRTime = require('convert-hrtime');
+		const PlantWorksMiddlewareError = require('plantworks-middleware-error').PlantWorksMiddlewareError;
+
+		try {
+			const startTime = process.hrtime();
+			// Step 0: Call the request data formatter...
+			let formattedData = await this._requestDataFormatter(requestData);
+			this.#performanceMetadata['requestDataFormatterDuration'] = Number(convertHRTime(process.hrtime(startTime)).milliseconds.toFixed(2));
+
+			// Step 1: initialize
+			const initializeStartTime = process.hrtime();
+			await this.initialize();
+			this.#performanceMetadata['initializeDuration'] = process.hrtime(initializeStartTime);
+
+			// Step 2: Call the attribute set evaluator to evaluate the current data
+			let itemExecutionTimes = 0;
+			let evaluatedAttributesArr = [];
+			if(!Array.isArray(formattedData))formattedData = [formattedData];
+			for(let i=0;i < formattedData.length; i++){
+				await this.#attrSetEvaluator.ingest(formattedData[i], this.#performanceMetadata);
+				let evaluatedAttributes = await this.#attrSetEvaluator.execute(formattedData[i], this.#performanceMetadata);
+				evaluatedAttributesArr.push(evaluatedAttributes);
+			}
+
+			// Step 3: Call the main function with the formatted data
+			const evaluateStartTime = process.hrtime();
+			const processedData = await this._evaluate(evaluatedAttributesArr, requestData);
+			this.#performanceMetadata['evaluateDuration'] = Number(convertHRTime(process.hrtime(evaluateStartTime)).milliseconds.toFixed(2));
+
+			// Step 4: Call the processed data transformer...
+			const responseDataFormatterStartTime = process.hrtime();
+			const outputData = await this._responseDataFormatter(processedData, requestData);
+			this.#performanceMetadata['responseDataFormatterDuration'] = Number(convertHRTime(process.hrtime(responseDataFormatterStartTime)).milliseconds.toFixed(2));
+
+			// Finally, store the metadata itself for analysis purposes
+			this.$logger.debug(`OperatorFormDataProcessor#${this.#id}::evaluate::result: ${safeJsonStringify(outputData, null, '\t')}`);
+			this.$logger.debug(`OperatorFormDataProcessor#${this.#id}::evaluate::metadata: ${safeJsonStringify(this.#performanceMetadata, null, '\t')}`);
+
+			return outputData;
+		}
+		catch(err) {
+			if((plantworksEnv === 'development') || (plantworksEnv === 'test')) {
+				this.$logger.error(`OperatorFormDataProcessor#${this.#id}::evaluate:\n${err.message}\n${err.stack}`);
+			}
+
+			throw err;
+		}
+	}
+	// #endregion
+
+	// #region Request Data Transformation
+	async _requestDataFormatter(inputData) {
+		try {
+<%- operatorForm.requestProcessor %>
+		}
+		catch(err) {
+			throw err;
+		}
+	}
+	// #endregion
+
+	// #region The actual executor
+	async _evaluate(formattedData, inputData) {
+		try {
+<%- operatorForm.executor %>
+		}
+		catch(err) {
+			throw err;
+		}
+	}
+	// #endregion
+
+	// #region Response Data Transformation
+	async _responseDataFormatter(processedData, inputData) {
+		try {
+<%- operatorForm.responseProcessor %>
+		}
+		catch(err) {
+			throw err;
+		}
+	}
+	// #endregion
+
+	// #region Private Fields
+	#id = '<%= operatorForm.id %>';
+	#currentTimestamp = moment();
+	#attrSetEvaluator = null;
+	#tagTypeMap = <%- parameterTypeMappings %>;
+	#performanceMetadata = null;
+	// #endregion
+}
+
+exports.RequestProcessor = OperatorFormRequestProcessor;
